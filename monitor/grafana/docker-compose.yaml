@@ -1,0 +1,14 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=weatherflow-password
+    volumes:
+      - ./provisioning/dashboard.yaml:/etc/grafana/provisioning/dashboards/main.yaml
+      - ./provisioning:/etc/grafana/provisioning
+      - ./dashboards:/var/lib/grafana/dashboards
+

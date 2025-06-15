@@ -1,0 +1,181 @@
+include:
+  - ./monitor/grafana/docker-compose.yaml
+  - ./monitor/monitoring-compose.yaml
+
+x-airflow-common:
+  &airflow-common
+  build: .
+  env_file:
+    - .env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@weatherflow-postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+  volumes:
+    - .:/opt/airflow/project
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/config:/opt/airflow/config
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./.env:/opt/airflow/.env:ro 
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    weatherflow-postgres:
+      condition: service_healthy    
+  networks:
+    - default      
+
+services:
+  weatherflow-webserver:
+    <<: *airflow-common
+    container_name: weatherflow-webserver
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      <<: *airflow-common-depends-on
+      weatherflow-init:
+        condition: service_completed_successfully     
+
+  weatherflow-scheduler:
+    <<: *airflow-common
+    container_name: weatherflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      weatherflow-init:
+        condition: service_completed_successfully    
+
+  weatherflow-init:
+    <<: *airflow-common
+    container_name: weatherflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # Create all required directories with proper permissions
+        echo "🔧 Setting up Airflow directories..."
+        
+        # Create directories as root
+        mkdir -p /opt/airflow/dags
+        mkdir -p /opt/airflow/logs
+        mkdir -p /opt/airflow/plugins
+        mkdir -p /opt/airflow/config
+        
+        # Create specific subdirectories that Airflow needs
+        mkdir -p /opt/airflow/logs/dag_processor_manager
+        mkdir -p /opt/airflow/logs/scheduler
+        
+        # Set ownership to airflow user (UID 50000)
+        chown -R 50000:0 /opt/airflow/logs
+        chown -R 50000:0 /opt/airflow/plugins
+        chown -R 50000:0 /opt/airflow/config
+        
+        # Set permissions
+        chmod -R 755 /opt/airflow/logs
+        chmod -R 755 /opt/airflow/plugins
+        chmod -R 755 /opt/airflow/config
+        
+        echo "✅ Directory permissions set"
+        
+        # Switch to airflow user for database operations
+        echo "🔧 Initializing Airflow database..."
+        su -c "airflow db init" airflow
+        
+        # Create admin user
+        echo "🔧 Creating admin user..."
+        su -c "airflow users create \
+          --username ${_AIRFLOW_WWW_USER_USERNAME:-airflow} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password ${_AIRFLOW_WWW_USER_PASSWORD:-airflow123}" airflow
+        
+        echo "✅ Airflow initialization complete!"
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow123}
+    user: "0:0"  # Must run as root to set up permissions 
+
+  weatherflow-postgres:
+    image: postgres:16
+    container_name: weatherflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - /db/weatherflow/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    ports:
+      - "5434:5432"
+    networks:
+      - default  
+
+  weatherflow-mongo:
+    container_name: weatherflow-mongo
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: weather_db
+    volumes:
+      - /db/weatherflow/mongo:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "27019:27017"  
+    networks:
+      - default    
+
+  weatherflow-redis:
+    image: redis/redis-stack-server:7.2.0-v8
+    container_name: weatherflow-redis
+    volumes:
+      - /db/weatherflow/redis:/data
+    restart: unless-stopped   
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping && echo '---' && redis-cli info | grep -q '^loading:0'"] 
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    ports:
+      - "6381:6379"
+    networks:
+      - default  
+
+networks:
+  default:
+    name: weatherflow-network      

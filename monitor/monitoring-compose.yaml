@@ -1,0 +1,90 @@
+services:
+## Monitoring ##
+  # Custom Exporter service for custom metrics
+  weatherflow-custom-exporter:
+    container_name: weatherflow-custom-exporter
+    build:
+      context: .. 
+      dockerfile: monitor/Dockerfile.monitoring
+    restart: unless-stopped
+    volumes:
+      - ../../../..:/home/scrape
+    env_file:
+      - ../.env 
+    ports:
+      - "8002:8000"   
+    networks:
+      - default  
+
+  # Node Exporter service for Hardware monitoring
+  weatherflow-node-exporter:
+    image: prom/node-exporter:v1.2.2
+    container_name: weatherflow-node-exporter
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude="^/(dev|proc|sys|run|snap)($|/)"'  # Empty pattern to show all mounts
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+      - /etc/mtab:/host/etc/mtab:ro
+    ports:
+      - "9102:9100"
+    restart: unless-stopped  
+    networks:
+      - default    
+      
+  # cAdvisor service for Docker monitoring
+  weatherflow-cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: weatherflow-cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8083:8081" 
+    command:
+      - '--port=8081'  
+    restart: unless-stopped
+    networks:
+      - default  
+
+  # Prometheus service
+  weatherflow-prometheus:
+    image: prom/prometheus
+    container_name: weatherflow-prometheus
+    depends_on:
+      - weatherflow-init-permissions
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - /var/lib/prometheus_data:/prometheus # For persistent storage
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus' # For persistent storage
+      - '--storage.tsdb.retention.time=1y'  # Set data retention to 1 year
+    user: "65534:65534"  # Assuming UID and GID for nobody user, prometheus container's default user 
+    ports:
+      - "9092:9090"
+    restart: unless-stopped
+    networks:
+      - default  
+
+  # Giving neccessary permission to prometheus for persistent storage
+  weatherflow-init-permissions:
+    image: alpine:latest
+    container_name: weatherflow-init-permissions
+    volumes:
+      - /var/lib/prometheus_data:/prometheus  
+    command: >
+      /bin/sh -c "
+        chown -R 65534:65534 /prometheus &&
+        chmod -R 775 /prometheus &&
+        exit 0
+      "
+    user: root  # Run as root to adjust permissions
+    networks:
+      - default  

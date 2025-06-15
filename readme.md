@@ -84,7 +84,7 @@ weatherflow/
 
 ### 3. Data Loading (load_gcs_to_snowflake.py)
 
-**Schedule**: Every 4 hours (`30 */4 * * *`)
+**Schedule**: Every 6 hours (`30 */6 * * *`)
 
 **What it does**:
 - Scans GCS bucket for new Parquet files
